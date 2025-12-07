@@ -1,0 +1,32 @@
+name: Rebecca Manager CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test-script:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Bash
+      run: sudo apt-get update && sudo apt-get install -y bash
+
+    - name: Test Rebecca Manager script
+      run: |
+        # Make the script executable
+        chmod +x rebecca-manager2.sh
+        
+        # Syntax check (dry-run)
+        bash -n rebecca-manager2.sh
+        
+        # Optional: Run the script in non-interactive mode for testing
+        # Here we test with `--help` or just check syntax
+        echo "✅ Script syntax looks good"
