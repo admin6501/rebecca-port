@@ -1,229 +1,109 @@
-#!/bin/bash
+=== 📋 نتایج نهایی تحلیل کد ===
 
-# ============================================================
-#   Rebecca & Marzban Manager Script
-#   Author: Khalil Omidian
-#   Version: 2.2 (Final)
-# ============================================================
+=== 📋 نتایج دسته 1/1 ===
+در ادامه تحلیل ساختاریافته‌ای از اسکریپت `rebecca-manager2.sh` ارائه می‌دهم که شامل **شناسایی باگ‌ها، مشکلات امنیتی، و پیشنهادهای بهبود** است:
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+---
 
-clear
+## ✅ نکات مثبت
 
-# ============================
-#   Pretty Header
-# ============================
+1. **ساختار منظم**: توابع به‌خوبی تفکیک شده‌اند و اسکریپت خوانا و مرتب است.
+2. **استفاده از رنگ‌ها**: برای افزایش خوانایی ترمینال مناسب است.
+3. **استفاده از `confirm`**: برای انجام عملیات حساس مانند نصب یا تغییر پورت، تأیید کاربر درخواست می‌شود.
 
-echo -e "${CYAN}"
-echo "=============================================================="
-echo "              Rebecca & Marzban Manager Script"
-echo "=============================================================="
-echo -e "${YELLOW}                 Author: Khalil Omidian ${NC}"
-echo -e "${CYAN}==============================================================${NC}"
-echo ""
+---
 
-# ============================
-#   FILE PATHS
-# ============================
+## 🐞 باگ‌ها و مشکلات احتمالی
 
-REBECCA_COMPOSE="/opt/rebecca/docker-compose.yml"
-MARZBAN_COMPOSE="/opt/marzban/docker-compose.yml"
+### 1. **عدم بررسی وجود دستورات خارجی**
+دستورات مانند `rebecca`, `marzban`, `docker-compose`, و `curl` مستقیماً فراخوانی می‌شوند بدون بررسی اینکه آیا نصب هستند یا خیر.
 
-REBECCA_ENV1="/opt/rebecca/.env"
-REBECCA_ENV2="/opt/rebecca/rebecca.env"
+🔧 **پیشنهاد**:
+```bash
+command -v rebecca >/dev/null 2>&1 || { echo "Rebecca command not found."; exit 1; }
+```
 
-# ============================
-#   Confirm Function
-# ============================
+---
 
-confirm() {
-    read -p "Are you sure? (y/n): " CONFIRM
-    if [[ "$CONFIRM" != "y" ]]; then
-        echo -e "${RED}Cancelled.${NC}"
-        return 1
-    fi
-    return 0
-}
+### 2. **عدم بررسی موفقیت اجرای دستورات**
+در مواردی مانند `sed`, `rebecca update`, یا نصب از GitHub، بررسی نمی‌شود که آیا دستور موفق بوده یا نه.
 
-# ============================
-#   Function: Change Image Tag
-# ============================
+🔧 **پیشنهاد**:
+```bash
+if ! sed -i ...; then
+  echo "Failed to change image tag"
+  return 1
+fi
+```
 
-change_image_tag() {
-    local TARGET_TAG=$1
+---
 
-    if [[ -f "$REBECCA_COMPOSE" ]]; then
-        TARGET_FILE="$REBECCA_COMPOSE"
-        MAIN_IMAGE="rebeccapanel/rebecca"
-        PANEL="rebecca"
-    elif [[ -f "$MARZBAN_COMPOSE" ]]; then
-        TARGET_FILE="$MARZBAN_COMPOSE"
-        MAIN_IMAGE="gozargah/marzban"
-        PANEL="marzban"
-    else
-        echo -e "${RED}docker-compose.yml not found!${NC}"
-        return
-    fi
+### 3. **احتمال خرابی `sed` در `change_image_tag`**
+اگر خطی با `image: rebeccapanel/rebecca:` یافت نشود، `sed` تغییری نمی‌دهد، و بدون پیام ادامه می‌دهد.
 
-    echo -e "${BLUE}Detected panel: $PANEL${NC}"
-    echo -e "${YELLOW}Changing ONLY main panel image to: ${MAIN_IMAGE}:${TARGET_TAG}${NC}"
+---
 
-    confirm || return
+### 4. **ورودی‌های بدون اعتبارسنجی**
+مثلاً در `change_port` مقدار واردشده به‌صورت مستقیم وارد فایل `.env` می‌شود بدون بررسی اینکه عدد معتبر است یا پورت مجاز.
 
-    sed -i "s|image: *${MAIN_IMAGE}:.*|image: ${MAIN_IMAGE}:${TARGET_TAG}|" "$TARGET_FILE"
+🔧 **پیشنهاد**:
+```bash
+[[ "$NEW_PORT" =~ ^[0-9]+$ ]] || { echo "Invalid port."; return; }
+```
 
-    if [[ "$PANEL" == "rebecca" ]]; then
-        rebecca update
-    else
-        marzban update
-    fi
+---
 
-    echo -e "${GREEN}Main panel image updated successfully.${NC}"
-}
+## 🔐 مشکلات امنیتی
 
-# ============================
-#   Function: Change Port
-# ============================
+### 1. **اجرای مستقیم اسکریپت از اینترنت با `sudo`**
+در توابع نصب (`install_rebecca_*`)، اسکریپت‌های ناشناس از GitHub با سطح دسترسی `sudo` و بدون بررسی امضای دیجیتال اجرا می‌شوند:
 
-change_port() {
-    ENV_FILE=""
+```bash
+sudo bash -c "$(curl -sL ...)"
+```
 
-    if [[ -f "$REBECCA_ENV1" ]]; then
-        ENV_FILE="$REBECCA_ENV1"
-    elif [[ -f "$REBECCA_ENV2" ]]; then
-        ENV_FILE="$REBECCA_ENV2"
-    else
-        echo -e "${RED}No .env file found!${NC}"
-        return
-    fi
+❗ **این موضوع می‌تواند به اجرای کد مخرب منجر شود.**
 
-    echo -e "${BLUE}Using env file: $ENV_FILE${NC}"
+🔐 **پیشنهاد**:
+- ابتدا اسکریپت را دانلود کرده، آن را بررسی و سپس اجرا کنید.
+- از `gpg` برای امضای دیجیتال و صحت‌سنجی استفاده کنید.
 
-    read -p "Enter new Rebecca port: " NEW_PORT
+---
 
-    confirm || return
+### 2. **عدم استفاده از quotes مناسب در متغیرها**
+در چند مورد مانند `rebecca $CMD` یا `read -p ...`, اگر متغیر شامل فاصله باشد، ممکن است باعث اجرای ناخواسته شود.
 
-    sed -i "s/^UVICORN_PORT *= *.*/UVICORN_PORT=$NEW_PORT/" "$ENV_FILE"
+🔧 **پیشنهاد**:
+```bash
+rebecca "$CMD"
+```
 
-    echo -e "${YELLOW}Restarting Rebecca...${NC}"
+---
 
-    rebecca restart
+## 💡 پیشنهادهای بهبود
 
-    echo -e "${GREEN}Port changed and Rebecca restarted successfully.${NC}"
-}
+### 1. **استفاده از `select` به‌جای منوی دستی**
+برای منوی تعاملی، استفاده از `select` ساختار خواناتری ارائه می‌دهد.
 
-# ============================
-#   Install Functions
-# ============================
+---
 
-install_rebecca_sqlite() {
-    confirm || return
-    sudo bash -c "$(curl -sL https://github.com/rebeccapanel/Rebecca-scripts/raw/master/rebecca.sh)" @ install
-}
+### 2. **اضافه کردن حالت non-interactive**
+برای استفاده در اتوماسیون و اسکریپت‌های CI/CD، حالت بدون نیاز به تأیید دستی می‌تواند مفید باشد (مثلاً با فلگ `--yes`).
 
-install_rebecca_mysql() {
-    confirm || return
-    sudo bash -c "$(curl -sL https://github.com/rebeccapanel/Rebecca-scripts/raw/master/rebecca.sh)" @ install --database mysql
-}
+---
 
-install_rebecca_mariadb() {
-    confirm || return
-    sudo bash -c "$(curl -sL https://github.com/rebeccapanel/Rebecca-scripts/raw/master/rebecca.sh)" @ install --database mariadb
-}
+### 3. **گزارش نهایی بهتر**
+در پایان هر عملیات اصلی، خلاصه وضعیت یا خروجی مرتبط نمایش داده شود.
 
-install_rebecca_node() {
-    confirm || return
-    sudo bash -c "$(curl -sL https://github.com/rebeccapanel/Rebecca-scripts/raw/master/rebecca-node.sh)" @ install
-}
+---
 
-# ============================
-#   Generic Rebecca Command
-# ============================
+## 📋 جمع‌بندی
 
-run_rebecca_cmd() {
-    local CMD=$1
-    confirm || return
-    rebecca $CMD
-}
+| نوع | موضوع | شدت | پیشنهاد |
+|-----|-------|------|---------|
+| باگ | بررسی نبودن دستورات | متوسط | استفاده از `command -v` |
+| امنیتی | اجرای مستقیم اسکریپت خارجی با sudo | بالا | دانلود و بررسی دستی |
+| بهبود | اعتبارسنجی ورودی‌ها | متوسط | بررسی پورت و مقدار tag |
+| بهبود | حالت غیرتعاملی | کم | اضافه کردن فلگ `--yes` |
 
-# ============================
-#   MENU
-# ============================
-
-while true; do
-echo -e "${CYAN}"
-echo "====================== MENU ======================"
-echo -e "${NC}"
-echo "0) Exit"
-echo "1) Change image to dev"
-echo "2) Change image to latest"
-echo "3) Change Rebecca port"
-echo "4) Rebecca up"
-echo "5) Rebecca down"
-echo "6) Rebecca restart"
-echo "7) Rebecca status"
-echo "8) Rebecca logs"
-echo "9) Rebecca install (SQLite)"
-echo "10) Rebecca install (MySQL)"
-echo "11) Rebecca install (MariaDB)"
-echo "12) Rebecca service-install"
-echo "13) Rebecca service-update"
-echo "14) Rebecca service-status"
-echo "15) Rebecca service-logs"
-echo "16) Rebecca service-uninstall"
-echo "17) Rebecca backup"
-echo "18) Rebecca backup-service"
-echo "19) Rebecca update"
-echo "20) Install Rebecca Node"
-echo "21) Rebecca core-update"
-echo "22) Rebecca uninstall"
-echo "=================================================="
-echo ""
-read -p "Select an option: " OPT
-
-case $OPT in
-
-    0) exit ;;
-
-    1) change_image_tag "dev" ;;
-    2) change_image_tag "latest" ;;
-    3) change_port ;;
-
-    4) run_rebecca_cmd "up" ;;
-    5) run_rebecca_cmd "down" ;;
-    6) run_rebecca_cmd "restart" ;;
-    7) run_rebecca_cmd "status" ;;
-    8) run_rebecca_cmd "logs" ;;
-
-    9) install_rebecca_sqlite ;;
-    10) install_rebecca_mysql ;;
-    11) install_rebecca_mariadb ;;
-
-    12) run_rebecca_cmd "service-install" ;;
-    13) run_rebecca_cmd "service-update" ;;
-    14) run_rebecca_cmd "service-status" ;;
-    15) run_rebecca_cmd "service-logs" ;;
-    16) run_rebecca_cmd "service-uninstall" ;;
-
-    17) run_rebecca_cmd "backup" ;;
-    18) run_rebecca_cmd "backup-service" ;;
-
-    19) run_rebecca_cmd "update" ;;
-
-    20) install_rebecca_node ;;
-
-    21) run_rebecca_cmd "core-update" ;;
-
-    22) run_rebecca_cmd "uninstall" ;;
-
-    *) echo -e "${RED}Invalid option!${NC}" ;;
-esac
-
-echo ""
-
-done
+اگر تمایل دارید نسخه امن‌تر و بهبودیافته از این اسکریپت تولید شود، خوشحال می‌شوم کمک کنم.
