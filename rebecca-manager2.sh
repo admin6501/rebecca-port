@@ -1,109 +1,99 @@
-=== 📋 نتایج نهایی تحلیل کد ===
+#!/bin/bash
 
-=== 📋 نتایج دسته 1/1 ===
-در ادامه تحلیل ساختاریافته‌ای از اسکریپت `rebecca-manager2.sh` ارائه می‌دهم که شامل **شناسایی باگ‌ها، مشکلات امنیتی، و پیشنهادهای بهبود** است:
+set -e
 
----
+REPO_URL="https://github.com/rebeccapanel/rebecca"
+ENV_FILE=".env"
 
-## ✅ نکات مثبت
+# Check command existence
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || { echo "$1 command not found. Please install it."; exit 1; }
+}
 
-1. **ساختار منظم**: توابع به‌خوبی تفکیک شده‌اند و اسکریپت خوانا و مرتب است.
-2. **استفاده از رنگ‌ها**: برای افزایش خوانایی ترمینال مناسب است.
-3. **استفاده از `confirm`**: برای انجام عملیات حساس مانند نصب یا تغییر پورت، تأیید کاربر درخواست می‌شود.
+# Confirm action
+confirm() {
+  if [[ "$AUTO_YES" == "true" ]]; then
+    return 0
+  fi
+  read -p "$1 [y/N]: " -r
+  [[ $REPLY =~ ^[Yy]$ ]]
+}
 
----
+# Change port number
+change_port() {
+  read -p "Enter new port number: " NEW_PORT
+  [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || { echo "Invalid port."; return 1; }
+  if grep -q '^PORT=' "$ENV_FILE"; then
+    sed -i "s/^PORT=.*/PORT=$NEW_PORT/" "$ENV_FILE"
+  else
+    echo "PORT=$NEW_PORT" >> "$ENV_FILE"
+  fi
+  echo "Port changed to $NEW_PORT"
+}
 
-## 🐞 باگ‌ها و مشکلات احتمالی
+# Change image tag
+change_image_tag() {
+  read -p "Enter new image tag: " NEW_TAG
+  if ! sed -i "s|image: rebeccapanel/rebecca:.*|image: rebeccapanel/rebecca:$NEW_TAG|" docker-compose.yml; then
+    echo "Failed to change image tag"; return 1
+  fi
+  echo "Image tag updated to $NEW_TAG"
+}
 
-### 1. **عدم بررسی وجود دستورات خارجی**
-دستورات مانند `rebecca`, `marzban`, `docker-compose`, و `curl` مستقیماً فراخوانی می‌شوند بدون بررسی اینکه آیا نصب هستند یا خیر.
+# Install Rebecca
+install_rebecca() {
+  require_command curl
+  require_command sudo
+  local TMP_SCRIPT="/tmp/install_rebecca.sh"
+  curl -fsSL "$REPO_URL/raw/main/install.sh" -o "$TMP_SCRIPT" || { echo "Download failed."; return 1; }
+  if confirm "Execute downloaded script with sudo?"; then
+    sudo bash "$TMP_SCRIPT"
+  fi
+  rm -f "$TMP_SCRIPT"
+}
 
-🔧 **پیشنهاد**:
-```bash
-command -v rebecca >/dev/null 2>&1 || { echo "Rebecca command not found."; exit 1; }
-```
+# Update Rebecca
+update_rebecca() {
+  require_command rebecca
+  if ! rebecca update; then
+    echo "Rebecca update failed."; return 1
+  fi
+  echo "Rebecca updated successfully."
+}
 
----
+# Main menu
+main_menu() {
+  PS3='Choose an option: '
+  options=("Change Port" "Change Image Tag" "Install Rebecca" "Update Rebecca" "Quit")
+  select opt in "${options[@]}"; do
+    case $REPLY in
+      1) change_port;;
+      2) change_image_tag;;
+      3) install_rebecca;;
+      4) update_rebecca;;
+      5) break;;
+      *) echo "Invalid option";;
+    esac
+  done
+}
 
-### 2. **عدم بررسی موفقیت اجرای دستورات**
-در مواردی مانند `sed`, `rebecca update`, یا نصب از GitHub، بررسی نمی‌شود که آیا دستور موفق بوده یا نه.
+# Parse args
+AUTO_YES=false
+for arg in "$@"; do
+  if [[ "$arg" == "--yes" ]]; then
+    AUTO_YES=true
+  fi
+  if [[ "$arg" == "--help" ]]; then
+    echo "Usage: $0 [--yes]"
+    exit 0
+  fi
 
-🔧 **پیشنهاد**:
-```bash
-if ! sed -i ...; then
-  echo "Failed to change image tag"
-  return 1
-fi
-```
+  # Allow calling a single function directly for CI/CD use
+  if declare -f "$arg" > /dev/null; then
+    "$arg"
+    exit $?
+  fi
 
----
+done
 
-### 3. **احتمال خرابی `sed` در `change_image_tag`**
-اگر خطی با `image: rebeccapanel/rebecca:` یافت نشود، `sed` تغییری نمی‌دهد، و بدون پیام ادامه می‌دهد.
-
----
-
-### 4. **ورودی‌های بدون اعتبارسنجی**
-مثلاً در `change_port` مقدار واردشده به‌صورت مستقیم وارد فایل `.env` می‌شود بدون بررسی اینکه عدد معتبر است یا پورت مجاز.
-
-🔧 **پیشنهاد**:
-```bash
-[[ "$NEW_PORT" =~ ^[0-9]+$ ]] || { echo "Invalid port."; return; }
-```
-
----
-
-## 🔐 مشکلات امنیتی
-
-### 1. **اجرای مستقیم اسکریپت از اینترنت با `sudo`**
-در توابع نصب (`install_rebecca_*`)، اسکریپت‌های ناشناس از GitHub با سطح دسترسی `sudo` و بدون بررسی امضای دیجیتال اجرا می‌شوند:
-
-```bash
-sudo bash -c "$(curl -sL ...)"
-```
-
-❗ **این موضوع می‌تواند به اجرای کد مخرب منجر شود.**
-
-🔐 **پیشنهاد**:
-- ابتدا اسکریپت را دانلود کرده، آن را بررسی و سپس اجرا کنید.
-- از `gpg` برای امضای دیجیتال و صحت‌سنجی استفاده کنید.
-
----
-
-### 2. **عدم استفاده از quotes مناسب در متغیرها**
-در چند مورد مانند `rebecca $CMD` یا `read -p ...`, اگر متغیر شامل فاصله باشد، ممکن است باعث اجرای ناخواسته شود.
-
-🔧 **پیشنهاد**:
-```bash
-rebecca "$CMD"
-```
-
----
-
-## 💡 پیشنهادهای بهبود
-
-### 1. **استفاده از `select` به‌جای منوی دستی**
-برای منوی تعاملی، استفاده از `select` ساختار خواناتری ارائه می‌دهد.
-
----
-
-### 2. **اضافه کردن حالت non-interactive**
-برای استفاده در اتوماسیون و اسکریپت‌های CI/CD، حالت بدون نیاز به تأیید دستی می‌تواند مفید باشد (مثلاً با فلگ `--yes`).
-
----
-
-### 3. **گزارش نهایی بهتر**
-در پایان هر عملیات اصلی، خلاصه وضعیت یا خروجی مرتبط نمایش داده شود.
-
----
-
-## 📋 جمع‌بندی
-
-| نوع | موضوع | شدت | پیشنهاد |
-|-----|-------|------|---------|
-| باگ | بررسی نبودن دستورات | متوسط | استفاده از `command -v` |
-| امنیتی | اجرای مستقیم اسکریپت خارجی با sudo | بالا | دانلود و بررسی دستی |
-| بهبود | اعتبارسنجی ورودی‌ها | متوسط | بررسی پورت و مقدار tag |
-| بهبود | حالت غیرتعاملی | کم | اضافه کردن فلگ `--yes` |
-
-اگر تمایل دارید نسخه امن‌تر و بهبودیافته از این اسکریپت تولید شود، خوشحال می‌شوم کمک کنم.
+main_menu
