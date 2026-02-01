@@ -557,24 +557,27 @@ if [[ "$role_choice" == "1" ]]; then
     fi
     
     declare -a KHAREJ_IPS
+    declare -a TUNNEL_PORTS
     echo ""
     for i in $(seq 1 $num_kharej); do
         read -p "Enter Kharej server $i IP: " kharej_ip
         KHAREJ_IPS+=("$kharej_ip")
+        
+        # Port validation loop for each server
+        while true; do
+            read -p "Enter tunnel port for Kharej $i (1 ~ 64435): " port
+            if [[ $port =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 64435 )); then
+                TUNNEL_PORTS+=("$port")
+                break
+            else
+                echo "Invalid port. Try again."
+            fi
+        done
+        echo ""
     done
     
-    # Port validation loop
-    while true; do
-        read -p "Tunnel port (1 ~ 64435): " DSTPORT
-        if [[ $DSTPORT =~ ^[0-9]+$ ]] && (( DSTPORT >= 1 && DSTPORT <= 64435 )); then
-            break
-        else
-            echo "Invalid port. Try again."
-        fi
-    done
-    
-    # Create all tunnels
-    vxlan_result=$(create_multi_tunnel "iran" "$IRAN_IP" "$BASE_VNI" "$DSTPORT" "${KHAREJ_IPS[@]}")
+    # Create all tunnels with individual ports
+    vxlan_result=$(create_multi_tunnel "iran" "$IRAN_IP" "$BASE_VNI" "${KHAREJ_IPS[@]}" "${TUNNEL_PORTS[@]}")
     
     # Parse VXLAN IPs for HAProxy
     readarray -t VXLAN_IPS <<< "$vxlan_result"
@@ -605,12 +608,12 @@ if [[ "$role_choice" == "1" ]]; then
     echo ""
     echo -e "${YELLOW}Your VXLAN IPs (use these in your panels):${NC}"
     for i in $(seq 1 $num_kharej); do
-        echo -e "  Tunnel to Kharej $i: 30.0.${i}.1"
+        echo -e "  Tunnel to Kharej $i: 30.0.${i}.1 (Port: ${TUNNEL_PORTS[$((i-1))]})"
     done
     echo ""
     echo -e "${YELLOW}Remote Kharej VXLAN IPs:${NC}"
     for i in $(seq 1 $num_kharej); do
-        echo -e "  Kharej $i: 30.0.${i}.2"
+        echo -e "  Kharej $i: 30.0.${i}.2 (Port: ${TUNNEL_PORTS[$((i-1))]})"
     done
 
 elif [[ "$role_choice" == "2" ]]; then
