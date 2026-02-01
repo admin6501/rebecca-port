@@ -77,47 +77,409 @@ show_active_tunnels() {
     if [[ -z "$tunnels" ]]; then
         echo -e "${YELLOW}No active tunnels found.${NC}"
     else
+        local num=1
         for tunnel in $tunnels; do
-            echo -e "${GREEN}Interface: $tunnel${NC}"
-            ip addr show $tunnel 2>/dev/null | grep -E 'inet |vxlan' | head -2
+            local status="DOWN"
+            ip link show $tunnel 2>/dev/null | grep -q "state UP" && status="UP"
+            local ip_addr=$(ip addr show $tunnel 2>/dev/null | grep -oP 'inet \K[^ ]+')
+            local remote=$(grep -l "$tunnel" /usr/local/bin/vxlan_bridge_*.sh 2>/dev/null | head -1 | xargs grep -oP 'remote \K[^ ]+' 2>/dev/null)
+            local port=$(grep -l "$tunnel" /usr/local/bin/vxlan_bridge_*.sh 2>/dev/null | head -1 | xargs grep -oP 'dstport \K[^ ]+' 2>/dev/null)
+            
+            if [[ "$status" == "UP" ]]; then
+                echo -e "${GREEN}[$num] $tunnel - Status: UP${NC}"
+            else
+                echo -e "${RED}[$num] $tunnel - Status: DOWN${NC}"
+            fi
+            echo -e "    IP: ${ip_addr:-N/A} | Remote: ${remote:-N/A} | Port: ${port:-N/A}"
             echo "---"
+            ((num++))
         done
     fi
     read -p "Press Enter to return to menu..."
 }
 
-# ---------------- EDIT VXLAN TUNNEL ----------------
-edit_vxlan_tunnel() {
-    local BRIDGE_FILE="/usr/local/bin/vxlan_bridge.sh"
-    local HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
-
-    # --- Retrieve current settings ---
-    local VXLAN_IF VNI CUR_REMOTE CUR_LOCAL CUR_PORT
-    if [[ -f "$BRIDGE_FILE" ]]; then
-        CUR_REMOTE=$(grep -oP 'remote \K[^ ]+' "$BRIDGE_FILE")
-        CUR_LOCAL=$(grep -oP 'ip addr add \K[^ ]+' "$BRIDGE_FILE")
-        CUR_PORT=$(grep -oP 'dstport \K[^ ]+' "$BRIDGE_FILE")
-        VXLAN_IF=$(grep -oP 'dev \K[^ ]+' "$BRIDGE_FILE" | head -n1)
-        VNI=$(grep -oP 'vxlan id \K[^ ]+' "$BRIDGE_FILE")
+# ---------------- LIST TUNNELS FOR MANAGEMENT ----------------
+list_tunnels() {
+    local tunnels=$(ip -d link show | grep -oP 'vxlan\d+' | sort -u)
+    local services=$(ls /etc/systemd/system/vxlan-tunnel-*.service 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/.service//')
+    
+    # Combine both active interfaces and services
+    local all_tunnels=$(echo -e "$tunnels\n$services" | grep -oP '\d+' | sort -u)
+    
+    if [[ -z "$all_tunnels" ]]; then
+        echo -e "${YELLOW}No tunnels found.${NC}"
+        return 1
     fi
+    
+    echo -e "${GREEN}=== Available Tunnels ===${NC}"
+    echo ""
+    
+    for num in $all_tunnels; do
+        local tunnel="vxlan$((87 + num))"
+        local svc_name="vxlan-tunnel-${num}"
+        local bridge_file="/usr/local/bin/vxlan_bridge_${num}.sh"
+        
+        # Get status
+        local iface_status="N/A"
+        local svc_status="N/A"
+        
+        if ip link show "$tunnel" &>/dev/null; then
+            ip link show "$tunnel" | grep -q "state UP" && iface_status="UP" || iface_status="DOWN"
+        fi
+        
+        if systemctl is-active "$svc_name" &>/dev/null; then
+            svc_status=$(systemctl is-active "$svc_name")
+        fi
+        
+        # Get details from bridge file
+        local remote="N/A"
+        local port="N/A"
+        local vxlan_ip="N/A"
+        
+        if [[ -f "$bridge_file" ]]; then
+            remote=$(grep -oP 'remote \K[^ ]+' "$bridge_file" 2>/dev/null || echo "N/A")
+            port=$(grep -oP 'dstport \K[^ ]+' "$bridge_file" 2>/dev/null || echo "N/A")
+            vxlan_ip=$(grep -oP 'ip addr add \K[^ ]+' "$bridge_file" 2>/dev/null || echo "N/A")
+        fi
+        
+        if [[ "$iface_status" == "UP" ]]; then
+            echo -e "${GREEN}[$num] Tunnel $num - Interface: $tunnel - Status: UP${NC}"
+        elif [[ "$iface_status" == "DOWN" ]]; then
+            echo -e "${RED}[$num] Tunnel $num - Interface: $tunnel - Status: DOWN${NC}"
+        else
+            echo -e "${YELLOW}[$num] Tunnel $num - Interface: $tunnel - Status: STOPPED${NC}"
+        fi
+        echo -e "    Remote: $remote | Port: $port | VXLAN IP: $vxlan_ip"
+        echo ""
+    done
+    
+    return 0
+}
 
-    echo "=== Edit VXLAN Tunnel ==="
-    # --- Prompt for new values (default to current) ---
-    read -p "Remote IP [$CUR_REMOTE]: " NEW_REMOTE
-    NEW_REMOTE=${NEW_REMOTE:-$CUR_REMOTE}
-    read -p "Local VXLAN IP (e.g. 10.0.1.15/24) [$CUR_LOCAL]: " NEW_LOCAL
-    NEW_LOCAL=${NEW_LOCAL:-$CUR_LOCAL}
-    [[ "$NEW_LOCAL" != */* ]] && NEW_LOCAL="$NEW_LOCAL/24"
-    read -p "VXLAN Port [$CUR_PORT]: " NEW_PORT
-    NEW_PORT=${NEW_PORT:-$CUR_PORT}
+# ---------------- MANAGE SINGLE TUNNEL ----------------
+manage_tunnel_menu() {
+    while true; do
+        clear
+        echo -e "${GREEN}+----------------------------------------+${NC}"
+        echo -e "${GREEN}|        Tunnel Management Menu          |${NC}"
+        echo -e "${GREEN}+----------------------------------------+${NC}"
+        echo ""
+        
+        if ! list_tunnels; then
+            read -p "Press Enter to return to main menu..."
+            return
+        fi
+        
+        echo "+----------------------------------------+"
+        echo "| Options:                               |"
+        echo "| 1- Start a tunnel                      |"
+        echo "| 2- Stop a tunnel                       |"
+        echo "| 3- Restart a tunnel                    |"
+        echo "| 4- Edit a tunnel                       |"
+        echo "| 5- Delete a tunnel                     |"
+        echo "| 0- Back to main menu                   |"
+        echo "+----------------------------------------+"
+        echo ""
+        read -p "Enter your choice [0-5]: " manage_choice
+        
+        case $manage_choice in
+            0)
+                return
+                ;;
+            1)
+                start_tunnel
+                ;;
+            2)
+                stop_tunnel
+                ;;
+            3)
+                restart_tunnel
+                ;;
+            4)
+                edit_single_tunnel
+                ;;
+            5)
+                delete_single_tunnel
+                ;;
+            *)
+                echo -e "${RED}[x] Invalid option.${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
 
-    # --- Validate inputs ---
-    if [[ -z "$NEW_REMOTE" || -z "$NEW_LOCAL" || -z "$NEW_PORT" ]]; then
-        echo "[x] Error: All fields are required."
+# ---------------- START TUNNEL ----------------
+start_tunnel() {
+    echo ""
+    read -p "Enter tunnel number to START (or 'b' to go back): " tunnel_num
+    
+    if [[ "$tunnel_num" == "b" || "$tunnel_num" == "B" ]]; then
         return
     fi
+    
+    if ! [[ "$tunnel_num" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}[x] Invalid tunnel number.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    local svc_name="vxlan-tunnel-${tunnel_num}"
+    local bridge_file="/usr/local/bin/vxlan_bridge_${tunnel_num}.sh"
+    
+    if [[ ! -f "$bridge_file" ]]; then
+        echo -e "${RED}[x] Tunnel $tunnel_num does not exist.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    echo -e "${YELLOW}[*] Starting tunnel $tunnel_num...${NC}"
+    
+    # Run bridge script directly for immediate effect
+    bash "$bridge_file"
+    
+    # Enable and start service
+    systemctl enable "$svc_name" 2>/dev/null
+    systemctl start "$svc_name" 2>/dev/null
+    
+    echo -e "${GREEN}[✓] Tunnel $tunnel_num started successfully.${NC}"
+    read -p "Press Enter to continue..."
+}
 
-    # --- Remove existing interface and any lingering IPs ---
+# ---------------- STOP TUNNEL ----------------
+stop_tunnel() {
+    echo ""
+    read -p "Enter tunnel number to STOP (or 'b' to go back): " tunnel_num
+    
+    if [[ "$tunnel_num" == "b" || "$tunnel_num" == "B" ]]; then
+        return
+    fi
+    
+    if ! [[ "$tunnel_num" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}[x] Invalid tunnel number.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    local VNI=$((87 + tunnel_num))
+    local tunnel="vxlan${VNI}"
+    local svc_name="vxlan-tunnel-${tunnel_num}"
+    
+    echo -e "${YELLOW}[*] Stopping tunnel $tunnel_num...${NC}"
+    
+    # Stop service
+    systemctl stop "$svc_name" 2>/dev/null
+    
+    # Delete interface
+    ip link del "$tunnel" 2>/dev/null
+    
+    # Kill any keepalive pings for this tunnel
+    pkill -f "ping.*$(grep -oP 'remote \K[^ ]+' /usr/local/bin/vxlan_bridge_${tunnel_num}.sh 2>/dev/null)" 2>/dev/null
+    
+    echo -e "${GREEN}[✓] Tunnel $tunnel_num stopped successfully.${NC}"
+    read -p "Press Enter to continue..."
+}
+
+# ---------------- RESTART TUNNEL ----------------
+restart_tunnel() {
+    echo ""
+    read -p "Enter tunnel number to RESTART (or 'b' to go back): " tunnel_num
+    
+    if [[ "$tunnel_num" == "b" || "$tunnel_num" == "B" ]]; then
+        return
+    fi
+    
+    if ! [[ "$tunnel_num" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}[x] Invalid tunnel number.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    local bridge_file="/usr/local/bin/vxlan_bridge_${tunnel_num}.sh"
+    
+    if [[ ! -f "$bridge_file" ]]; then
+        echo -e "${RED}[x] Tunnel $tunnel_num does not exist.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    local VNI=$((87 + tunnel_num))
+    local tunnel="vxlan${VNI}"
+    local svc_name="vxlan-tunnel-${tunnel_num}"
+    
+    echo -e "${YELLOW}[*] Restarting tunnel $tunnel_num...${NC}"
+    
+    # Stop first
+    systemctl stop "$svc_name" 2>/dev/null
+    ip link del "$tunnel" 2>/dev/null
+    pkill -f "ping.*$(grep -oP 'remote \K[^ ]+' "$bridge_file" 2>/dev/null)" 2>/dev/null
+    
+    sleep 1
+    
+    # Start again
+    bash "$bridge_file"
+    systemctl start "$svc_name" 2>/dev/null
+    
+    echo -e "${GREEN}[✓] Tunnel $tunnel_num restarted successfully.${NC}"
+    read -p "Press Enter to continue..."
+}
+
+# ---------------- EDIT SINGLE TUNNEL ----------------
+edit_single_tunnel() {
+    echo ""
+    read -p "Enter tunnel number to EDIT (or 'b' to go back): " tunnel_num
+    
+    if [[ "$tunnel_num" == "b" || "$tunnel_num" == "B" ]]; then
+        return
+    fi
+    
+    if ! [[ "$tunnel_num" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}[x] Invalid tunnel number.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    local bridge_file="/usr/local/bin/vxlan_bridge_${tunnel_num}.sh"
+    local svc_file="/etc/systemd/system/vxlan-tunnel-${tunnel_num}.service"
+    
+    if [[ ! -f "$bridge_file" ]]; then
+        echo -e "${RED}[x] Tunnel $tunnel_num does not exist.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    # Get current values
+    local CUR_REMOTE=$(grep -oP 'remote \K[^ ]+' "$bridge_file")
+    local CUR_PORT=$(grep -oP 'dstport \K[^ ]+' "$bridge_file")
+    local CUR_IP=$(grep -oP 'ip addr add \K[^ ]+' "$bridge_file")
+    local VNI=$(grep -oP 'vxlan id \K[^ ]+' "$bridge_file")
+    local INTERFACE=$(grep -oP 'dev \K[^ ]+' "$bridge_file" | head -n1)
+    local HOST_IP=$(hostname -I | awk '{print $1}')
+    
+    echo ""
+    echo -e "${GREEN}=== Edit Tunnel $tunnel_num ===${NC}"
+    echo -e "Current Remote IP: ${YELLOW}$CUR_REMOTE${NC}"
+    echo -e "Current Port: ${YELLOW}$CUR_PORT${NC}"
+    echo -e "Current VXLAN IP: ${YELLOW}$CUR_IP${NC}"
+    echo ""
+    
+    # Get new values
+    read -p "New Remote IP [$CUR_REMOTE]: " NEW_REMOTE
+    NEW_REMOTE=${NEW_REMOTE:-$CUR_REMOTE}
+    
+    while true; do
+        read -p "New Port [$CUR_PORT]: " NEW_PORT
+        NEW_PORT=${NEW_PORT:-$CUR_PORT}
+        if [[ $NEW_PORT =~ ^[0-9]+$ ]] && (( NEW_PORT >= 1 && NEW_PORT <= 64435 )); then
+            break
+        else
+            echo "Invalid port. Try again (1-64435)."
+        fi
+    done
+    
+    read -p "New VXLAN IP [$CUR_IP]: " NEW_IP
+    NEW_IP=${NEW_IP:-$CUR_IP}
+    [[ "$NEW_IP" != */* ]] && NEW_IP="$NEW_IP/24"
+    
+    echo ""
+    echo -e "${YELLOW}[*] Applying changes...${NC}"
+    
+    # Stop the tunnel first
+    local tunnel="vxlan$VNI"
+    systemctl stop "vxlan-tunnel-${tunnel_num}" 2>/dev/null
+    ip link del "$tunnel" 2>/dev/null
+    pkill -f "ping.*$CUR_REMOTE" 2>/dev/null
+    
+    # Update bridge script
+    cat <<EOF > "$bridge_file"
+#!/bin/bash
+ip link del $tunnel 2>/dev/null || true
+ip link add $tunnel type vxlan id $VNI local $HOST_IP remote $NEW_REMOTE dev $INTERFACE dstport $NEW_PORT nolearning
+ip addr add $NEW_IP dev $tunnel
+ip link set $tunnel up
+# Persistent keepalive: ping remote every 30s in background
+( while true; do ping -c 1 $NEW_REMOTE >/dev/null 2>&1; sleep 30; done ) &
+EOF
+    chmod +x "$bridge_file"
+    
+    # Update systemd service description
+    sed -i "s/Description=.*/Description=VXLAN Tunnel $tunnel_num to $NEW_REMOTE (Port: $NEW_PORT)/" "$svc_file"
+    
+    # Update iptables
+    iptables -I INPUT 1 -p udp --dport "$NEW_PORT" -j ACCEPT 2>/dev/null || true
+    iptables -I INPUT 1 -s "$NEW_REMOTE" -j ACCEPT 2>/dev/null || true
+    
+    # Reload and start
+    systemctl daemon-reload
+    bash "$bridge_file"
+    systemctl start "vxlan-tunnel-${tunnel_num}" 2>/dev/null
+    
+    echo -e "${GREEN}[✓] Tunnel $tunnel_num updated successfully!${NC}"
+    echo -e "    Remote: $NEW_REMOTE | Port: $NEW_PORT | IP: $NEW_IP"
+    read -p "Press Enter to continue..."
+}
+
+# ---------------- DELETE SINGLE TUNNEL ----------------
+delete_single_tunnel() {
+    echo ""
+    read -p "Enter tunnel number to DELETE (or 'b' to go back): " tunnel_num
+    
+    if [[ "$tunnel_num" == "b" || "$tunnel_num" == "B" ]]; then
+        return
+    fi
+    
+    if ! [[ "$tunnel_num" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}[x] Invalid tunnel number.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    local bridge_file="/usr/local/bin/vxlan_bridge_${tunnel_num}.sh"
+    local svc_file="/etc/systemd/system/vxlan-tunnel-${tunnel_num}.service"
+    
+    if [[ ! -f "$bridge_file" ]] && [[ ! -f "$svc_file" ]]; then
+        echo -e "${RED}[x] Tunnel $tunnel_num does not exist.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    # Confirmation
+    echo -e "${RED}WARNING: This will permanently delete tunnel $tunnel_num!${NC}"
+    read -p "Are you sure? (y/n): " confirm
+    
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "${YELLOW}[*] Deletion cancelled.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    echo -e "${YELLOW}[*] Deleting tunnel $tunnel_num...${NC}"
+    
+    # Get VNI and remote for cleanup
+    local VNI=$(grep -oP 'vxlan id \K[^ ]+' "$bridge_file" 2>/dev/null)
+    local remote=$(grep -oP 'remote \K[^ ]+' "$bridge_file" 2>/dev/null)
+    local tunnel="vxlan${VNI:-$((87 + tunnel_num))}"
+    
+    # Stop service
+    systemctl stop "vxlan-tunnel-${tunnel_num}" 2>/dev/null
+    systemctl disable "vxlan-tunnel-${tunnel_num}" 2>/dev/null
+    
+    # Delete interface
+    ip link del "$tunnel" 2>/dev/null
+    
+    # Kill keepalive pings
+    [[ -n "$remote" ]] && pkill -f "ping.*$remote" 2>/dev/null
+    
+    # Remove files
+    rm -f "$bridge_file"
+    rm -f "$svc_file"
+    
+    # Reload systemd
+    systemctl daemon-reload
+    
+    echo -e "${GREEN}[✓] Tunnel $tunnel_num deleted successfully.${NC}"
+    read -p "Press Enter to continue..."
+}
     if ip link show "$VXLAN_IF" &>/dev/null; then
         echo "[*] Deleting existing interface $VXLAN_IF"
         ip link del "$VXLAN_IF"
