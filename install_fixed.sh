@@ -634,24 +634,27 @@ elif [[ "$role_choice" == "2" ]]; then
     fi
     
     declare -a IRAN_IPS
+    declare -a TUNNEL_PORTS
     echo ""
     for i in $(seq 1 $num_iran); do
         read -p "Enter Iran server $i IP: " iran_ip
         IRAN_IPS+=("$iran_ip")
+        
+        # Port validation loop for each server
+        while true; do
+            read -p "Enter tunnel port for Iran $i (1 ~ 64435): " port
+            if [[ $port =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 64435 )); then
+                TUNNEL_PORTS+=("$port")
+                break
+            else
+                echo "Invalid port. Try again."
+            fi
+        done
+        echo ""
     done
     
-    # Port validation loop
-    while true; do
-        read -p "Tunnel port (1 ~ 64435): " DSTPORT
-        if [[ $DSTPORT =~ ^[0-9]+$ ]] && (( DSTPORT >= 1 && DSTPORT <= 64435 )); then
-            break
-        else
-            echo "Invalid port. Try again."
-        fi
-    done
-    
-    # Create all tunnels
-    create_multi_tunnel "kharej" "$KHAREJ_IP" "$BASE_VNI" "$DSTPORT" "${IRAN_IPS[@]}"
+    # Create all tunnels with individual ports
+    create_multi_tunnel "kharej" "$KHAREJ_IP" "$BASE_VNI" "${IRAN_IPS[@]}" "${TUNNEL_PORTS[@]}"
     
     echo ""
     echo -e "${GREEN}========================================${NC}"
@@ -660,12 +663,12 @@ elif [[ "$role_choice" == "2" ]]; then
     echo ""
     echo -e "${YELLOW}Your VXLAN IPs (use these in your panels):${NC}"
     for i in $(seq 1 $num_iran); do
-        echo -e "  Tunnel to Iran $i: 30.0.${i}.2"
+        echo -e "  Tunnel to Iran $i: 30.0.${i}.2 (Port: ${TUNNEL_PORTS[$((i-1))]})"
     done
     echo ""
     echo -e "${YELLOW}Remote Iran VXLAN IPs:${NC}"
     for i in $(seq 1 $num_iran); do
-        echo -e "  Iran $i: 30.0.${i}.1"
+        echo -e "  Iran $i: 30.0.${i}.1 (Port: ${TUNNEL_PORTS[$((i-1))]})"
     done
 
 elif [[ "$role_choice" == "3" ]]; then
