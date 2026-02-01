@@ -281,13 +281,28 @@ EOL
 }
 
 # ---------------- CREATE MULTI-TUNNEL FUNCTION ----------------
+# This version accepts arrays: remote_ips and ports (one port per tunnel)
 create_multi_tunnel() {
     local role=$1           # iran or kharej
     local local_ip=$2       # this server IP
     local base_vni=$3       # starting VNI
-    local dstport=$4        # tunnel port
-    shift 4
-    local remote_ips=("$@") # array of remote IPs
+    shift 3
+    
+    # Parse the remaining arguments: first half are IPs, second half are ports
+    local total_args=$#
+    local num_tunnels=$((total_args / 2))
+    
+    local remote_ips=()
+    local ports=()
+    
+    for i in $(seq 1 $num_tunnels); do
+        remote_ips+=("$1")
+        shift
+    done
+    for i in $(seq 1 $num_tunnels); do
+        ports+=("$1")
+        shift
+    done
     
     local INTERFACE=$(ip route get 1.1.1.1 | awk '{print $5}' | head -n1)
     local HOST_IP=$(hostname -I | awk '{print $1}')
@@ -296,7 +311,9 @@ create_multi_tunnel() {
     echo -e "${GREEN}[*] Creating ${#remote_ips[@]} VXLAN tunnels...${NC}"
     
     local tunnel_num=1
-    for remote_ip in "${remote_ips[@]}"; do
+    for idx in "${!remote_ips[@]}"; do
+        local remote_ip="${remote_ips[$idx]}"
+        local dstport="${ports[$idx]}"
         local VNI=$((base_vni + tunnel_num - 1))
         local VXLAN_IF="vxlan${VNI}"
         
@@ -313,7 +330,7 @@ create_multi_tunnel() {
         
         vxlan_ips+=("${VXLAN_IP%/*}")
         
-        echo -e "${YELLOW}[+] Creating tunnel $tunnel_num to $remote_ip (VNI: $VNI)${NC}"
+        echo -e "${YELLOW}[+] Creating tunnel $tunnel_num to $remote_ip (VNI: $VNI, Port: $dstport)${NC}"
         
         # Delete if exists
         ip link del "$VXLAN_IF" 2>/dev/null || true
@@ -347,7 +364,7 @@ EOF
         # Create systemd service for this tunnel
         cat <<EOF > "/etc/systemd/system/vxlan-tunnel-${tunnel_num}.service"
 [Unit]
-Description=VXLAN Tunnel $tunnel_num to $remote_ip
+Description=VXLAN Tunnel $tunnel_num to $remote_ip (Port: $dstport)
 After=network.target
 
 [Service]
@@ -361,7 +378,7 @@ EOF
         
         chmod 644 "/etc/systemd/system/vxlan-tunnel-${tunnel_num}.service"
         
-        echo -e "${GREEN}[✓] Tunnel $tunnel_num created: $VXLAN_IF -> $remote_ip (IP: ${VXLAN_IP%/*})${NC}"
+        echo -e "${GREEN}[✓] Tunnel $tunnel_num created: $VXLAN_IF -> $remote_ip (IP: ${VXLAN_IP%/*}, Port: $dstport)${NC}"
         
         ((tunnel_num++))
     done
@@ -382,7 +399,7 @@ EOF
     echo ""
     echo -e "${YELLOW}Your VXLAN IPs:${NC}"
     for i in "${!vxlan_ips[@]}"; do
-        echo -e "  Tunnel $((i+1)): ${vxlan_ips[$i]}"
+        echo -e "  Tunnel $((i+1)): ${vxlan_ips[$i]} (Port: ${ports[$i]})"
     done
     echo ""
     
