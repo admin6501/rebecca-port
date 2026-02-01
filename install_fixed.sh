@@ -480,50 +480,6 @@ delete_single_tunnel() {
     echo -e "${GREEN}[✓] Tunnel $tunnel_num deleted successfully.${NC}"
     read -p "Press Enter to continue..."
 }
-    if ip link show "$VXLAN_IF" &>/dev/null; then
-        echo "[*] Deleting existing interface $VXLAN_IF"
-        ip link del "$VXLAN_IF"
-    else
-        # flush any old IPs if interface exists in namespace
-        ip addr flush dev "$VXLAN_IF" 2>/dev/null || true
-    fi
-
-    # --- Create and configure new VXLAN ---
-    local IFACE=$(ip route get 1.1.1.1 | awk '{print $5}' | head -n1)
-    local HOST_IP=$(hostname -I | awk '{print $1}')
-    echo "[*] Creating VXLAN interface $VXLAN_IF with ID $VNI"
-    ip link add "$VXLAN_IF" type vxlan id "$VNI" \
-        local "$HOST_IP" remote "$NEW_REMOTE" \
-        dev "$IFACE" dstport "$NEW_PORT" nolearning
-    echo "[*] Assigning IP $NEW_LOCAL to $VXLAN_IF"
-    ip addr add "$NEW_LOCAL" dev "$VXLAN_IF"
-    ip link set "$VXLAN_IF" up
-
-    # --- Update bridge script for persistence ---
-    if [[ -f "$BRIDGE_FILE" ]]; then
-        sed -i "s|remote [^ ]\+|remote $NEW_REMOTE|" "$BRIDGE_FILE"
-        sed -i "s|ip addr add [^ ]\+|ip addr add $NEW_LOCAL|" "$BRIDGE_FILE"
-        sed -i "s|dstport [^ ]\+|dstport $NEW_PORT|" "$BRIDGE_FILE"
-    fi
-
-    # --- Update HAProxy backend IP if configured ---
-    if [[ -f "$HAPROXY_CFG" ]]; then
-        local OLD_IP="${CUR_LOCAL%%/*}"
-        local NEW_IP="${NEW_LOCAL%%/*}"
-        if [[ "$OLD_IP" != "$NEW_IP" ]]; then
-            echo "[*] Replacing HAProxy IP: $OLD_IP -> $NEW_IP"
-            sed -i "s/$OLD_IP/$NEW_IP/g" "$HAPROXY_CFG"
-            systemctl restart haproxy
-        fi
-    fi
-
-    # --- Restart VXLAN service ---
-    echo "[*] Restarting VXLAN tunnel service"
-    systemctl restart vxlan-tunnel.service
-
-    echo -e "${GREEN}[✓] VXLAN tunnel updated and all services restarted.${NC}"
-}
-
 
 uninstall_all_vxlan() {
     echo "[!] Deleting all VXLAN interfaces and cleaning up..."
