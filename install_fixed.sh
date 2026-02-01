@@ -738,11 +738,11 @@ while true; do
             break
             ;;
         2)
-            uninstall_all_vxlan
-            read -p "Press Enter to return to menu..."
+            manage_tunnel_menu
             ;;
         3)
-            edit_vxlan_tunnel
+            uninstall_all_vxlan
+            read -p "Press Enter to return to menu..."
             ;;
         4)
             install_bbr
